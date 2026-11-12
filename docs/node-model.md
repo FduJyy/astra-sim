@@ -2,6 +2,8 @@
 
 实现规格见 [node-model-implementation-spec.md](node-model-implementation-spec.md)。这是事务级时序模型：一个 rank 对应一颗加速器，计算单元、显式存储、DMA、mesh 和集合通信在同一仿真时间线上推进；不执行真实数值计算。
 
+子模块硬件行为、参数与源码的逐项对应，以及节点事件推进和外部交互详解，见 [node-model-hardware-and-code.md](node-model-hardware-and-code.md)。
+
 ## 启用与构建
 
 未设置 `node-model-config` 时保持 legacy 工作流。设置后启用 detailed 模式，目前验证的外部后端为 analytical congestion-aware；其他后端会明确拒绝 detailed 模式。
