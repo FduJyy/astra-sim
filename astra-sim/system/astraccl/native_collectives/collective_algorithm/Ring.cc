@@ -5,6 +5,7 @@ LICENSE file in the root directory of this source tree.
 
 #include "astra-sim/system/astraccl/native_collectives/collective_algorithm/Ring.hh"
 
+#include "astra-sim/node/NodeSystem.hh"
 #include "astra-sim/system/PacketBundle.hh"
 #include "astra-sim/system/RecvPacketEventHandlerData.hh"
 
@@ -221,6 +222,14 @@ bool Ring::ready() {
         return false;
     }
     MyPacket packet = packets.front();
+    if (stream->owner->node_system) {
+        stream->owner->node_system->ring_transfer(*this, [this] {
+            ++total_packets_received;
+            insert_packet(nullptr);
+        });
+        reduce();
+        return true;
+    }
     sim_request snd_req;
     snd_req.srcRank = id;
     snd_req.dstRank = packet.preferred_dest;

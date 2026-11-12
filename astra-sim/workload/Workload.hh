@@ -50,6 +50,9 @@ class Workload : public Callable {
     void skip_invalid(std::shared_ptr<Chakra::FeederV3::ETFeederNode> node);
     void call(EventType event, CallData* data);
     void fire();
+    void issue_detailed_nodes();
+    void complete_detailed(uint64_t node_id);
+    void issue_node_remote(uint64_t bytes, std::function<void()> completed);
 
     // stats
     void report();
@@ -65,6 +68,8 @@ class Workload : public Callable {
     bool is_finished;
 
   private:
+    uint64_t remote_callback_id_ = UINT64_MAX;
+    std::unordered_map<uint64_t, std::function<void()>> remote_callbacks_;
     // From the ET node, find out the corresponding communicator group, and
     // return the pointer. If no communicator group is specified for this ET
     // node, return nullptr.

@@ -23,6 +23,7 @@ class DataSet : public Callable, public StreamStat {
 
     static int id_auto_increment;
     int my_id;
+    uint64_t node_operation = UINT64_MAX;
     int total_streams;
     int finished_streams;
     bool finished;

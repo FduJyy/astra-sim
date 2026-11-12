@@ -59,6 +59,7 @@ file(GLOB srcs
     "${CMAKE_CURRENT_SOURCE_DIR}/astra-sim/system/memory/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/astra-sim/system/scheduling/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/astra-sim/common/*.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/astra-sim/node/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/graph_frontend/chakra/src/third_party/utils/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/graph_frontend/chakra/schema/protobuf/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/graph_frontend/chakra/src/feeder_v3/*.cpp"
@@ -66,6 +67,13 @@ file(GLOB srcs
 
 # Compile AstraSim Library
 add_library(AstraSim STATIC ${srcs})
+
+if(BUILD_TESTING)
+    add_executable(AstraNodeModelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/node_model/node_model_test.cc")
+    target_link_libraries(AstraNodeModelTests PRIVATE AstraSim)
+    target_include_directories(AstraNodeModelTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/extern/helper")
+    add_test(NAME node_model COMMAND AstraNodeModelTests)
+endif()
 
 # Link libraries
 target_link_libraries(AstraSim PUBLIC fmt::fmt)

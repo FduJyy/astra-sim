@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "admission_capacity": 64,
+  "cpu": {
+    "slots": 1
+  },
+  "compute_units": [
+    {
+      "id": "cu0",
+      "kind": "tensor",
+      "ops_per_ns": 1024,
+      "startup_ns": 2,
+      "local_storage": "cu_mem0"
+    },
+    {
+      "id": "cu1",
+      "kind": "tensor",
+      "ops_per_ns": 1024,
+      "startup_ns": 2,
+      "local_storage": "cu_mem1"
+    }
+  ],
+  "storages": [
+    {
+      "id": "cu_mem0",
+      "kind": "sram",
+      "scope": "cu_private",
+      "clients": [
+        "cu0"
+      ],
+      "capacity_bytes": 65536,
+      "bytes_per_ns": 64,
+      "access_latency_ns": 2,
+      "queue_entries": 16
+    },
+    {
+      "id": "cu_mem1",
+      "kind": "sram",
+      "scope": "cu_private",
+      "clients": [
+        "cu1"
+      ],
+      "capacity_bytes": 65536,
+      "bytes_per_ns": 64,
+      "access_latency_ns": 2,
+      "queue_entries": 16
+    },
+    {
+      "id": "local0",
+      "kind": "sram",
+      "scope": "group_local",
+      "clients": [
+        "cu0",
+        "cu1"
+      ],
+      "capacity_bytes": 524288,
+      "bytes_per_ns": 32,
+      "access_latency_ns": 5,
+      "queue_entries": 32
+    },
+    {
+      "id": "shared0",
+      "kind": "sram",
+      "scope": "node_shared",
+      "clients": [
+        "*"
+      ],
+      "capacity_bytes": 2097152,
+      "bytes_per_ns": 64,
+      "access_latency_ns": 8,
+      "queue_entries": 32
+    },
+    {
+      "id": "hbm0",
+      "kind": "hbm",
+      "scope": "node_shared",
+      "clients": [
+        "*"
+      ],
+      "capacity_bytes": 1073741824,
+      "bytes_per_ns": 128,
+      "access_latency_ns": 80,
+      "queue_entries": 32
+    },
+    {
+      "id": "ddr0",
+      "kind": "ddr",
+      "scope": "node_shared",
+      "clients": [
+        "*"
+      ],
+      "capacity_bytes": 2147483648,
+      "bytes_per_ns": 32,
+      "access_latency_ns": 120,
+      "queue_entries": 32
+    }
+  ],
+  "dma_engines": [
+    {
+      "id": "dma0",
+      "queue_entries": 16,
+      "max_outstanding": 8,
+      "burst_bytes": 256,
+      "bytes_per_ns": 32,
+      "startup_ns": 4
+    },
+    {
+      "id": "dma1",
+      "queue_entries": 16,
+      "max_outstanding": 8,
+      "burst_bytes": 256,
+      "bytes_per_ns": 32,
+      "startup_ns": 4
+    }
+  ],
+  "collective_engine": {
+    "id": "coll0",
+    "slots": 1,
+    "queue_entries": 16,
+    "startup_ns": 4,
+    "reduce_bytes_per_ns": 32
+  },
+  "network_endpoint": {
+    "id": "nic0",
+    "tx_buffer_bytes": 1048576,
+    "rx_buffer_bytes": 1048576,
+    "bytes_per_ns": 64,
+    "startup_ns": 2
+  },
+  "noc": {
+    "rows": 2,
+    "columns": 2,
+    "routing": "xy",
+    "packet_payload_bytes": 64,
+    "header_bytes": 16,
+    "link_bytes_per_ns": 32,
+    "link_latency_ns": 1,
+    "router_latency_ns": 1,
+    "input_buffer_packets_per_class": 8,
+    "attachments": [
+      {
+        "port": "cu0.fabric",
+        "router": [
+          0,
+          0
+        ]
+      },
+      {
+        "port": "cu1.fabric",
+        "router": [
+          1,
+          0
+        ]
+      },
+      {
+        "port": "cu_mem0.fabric",
+        "router": [
+          0,
+          0
+        ]
+      },
+      {
+        "port": "cu_mem1.fabric",
+        "router": [
+          1,
+          0
+        ]
+      },
+      {
+        "port": "local0.fabric",
+        "router": [
+          0,
+          1
+        ]
+      },
+      {
+        "port": "shared0.fabric",
+        "router": [
+          1,
+          1
+        ]
+      },
+      {
+        "port": "hbm0.fabric",
+        "router": [
+          1,
+          1
+        ]
+      },
+      {
+        "port": "ddr0.fabric",
+        "router": [
+          1,
+          1
+        ]
+      },
+      {
+        "port": "dma0.fabric",
+        "router": [
+          0,
+          0
+        ]
+      },
+      {
+        "port": "dma1.fabric",
+        "router": [
+          1,
+          0
+        ]
+      },
+      {
+        "port": "coll0.fabric",
+        "router": [
+          0,
+          1
+        ]
+      },
+      {
+        "port": "nic0.fabric",
+        "router": [
+          0,
+          1
+        ]
+      }
+    ]
+  },
+  "direct_links": [
+    {
+      "a": "cu0.mem",
+      "b": "cu_mem0.local",
+      "bytes_per_ns": 64,
+      "latency_ns": 1
+    },
+    {
+      "a": "cu1.mem",
+      "b": "cu_mem1.local",
+      "bytes_per_ns": 64,
+      "latency_ns": 1
+    }
+  ],
+  "operation_profiles": "mesh-node-profiles.json"
+}

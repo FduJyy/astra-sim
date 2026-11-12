@@ -4,11 +4,13 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/node/NodeSystem.hh"
 #include "common/CmdLineParser.hh"
 #include "congestion_aware/CongestionAwareNetworkApi.hh"
 #include <astra-network-analytical/common/EventQueue.h>
 #include <astra-network-analytical/common/NetworkParser.h>
 #include <astra-network-analytical/congestion_aware/Helper.h>
+#include <iostream>
 #include <remote_memory_backend/analytical/AnalyticalRemoteMemory.hh>
 
 using namespace AstraSim;
@@ -18,7 +20,7 @@ using namespace AstraSimAnalyticalCongestionAware;
 using namespace NetworkAnalytical;
 using namespace NetworkAnalyticalCongestionAware;
 
-int main(int argc, char* argv[]) {
+static int run_simulation(int argc, char* argv[]) {
     // Parse command line arguments
     auto cmd_line_parser = CmdLineParser(argv[0]);
     cmd_line_parser.parse(argc, argv);
@@ -93,14 +95,36 @@ int main(int argc, char* argv[]) {
     // Initiate ASTRA-sim simulation
     for (int i = 0; i < npus_count; i++) {
         systems[i]->workload->fire();
+        if (systems[i]->node_system) {
+            systems[i]->node_system->rethrow_if_failed();
+        }
     }
 
     // run simulation
     while (!event_queue->finished()) {
         event_queue->proceed();
+        for (const auto system : systems) {
+            if (system->node_system) {
+                system->node_system->rethrow_if_failed();
+            }
+        }
     }
 
     for (auto it : systems) {
+        if (it->node_system &&
+            (!it->node_system->model.idle() || !it->workload->is_finished)) {
+            auto state = it->node_system->model.statistics();
+            state["node_idle"] = it->node_system->model.idle();
+            state["workload_finished"] = it->workload->is_finished;
+            if (it->workload->et_feeder) {
+                const auto& resolver =
+                    it->workload->et_feeder->getDependancyResolver();
+                state["ready_nodes"] = resolver.get_dependancy_free_nodes();
+                state["ongoing_nodes"] = resolver.get_ongoing_nodes();
+            }
+            NodeSim::check(false, "NoProgress rank=" + std::to_string(it->id) +
+                                      " state=" + state.dump());
+        }
         delete it;
     }
     systems.clear();
@@ -108,4 +132,13 @@ int main(int argc, char* argv[]) {
     // terminate simulation
     AstraSim::LoggerFactory::shutdown();
     return 0;
+}
+
+int main(int argc, char* argv[]) {
+    try {
+        return run_simulation(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << std::endl;
+        return 1;
+    }
 }

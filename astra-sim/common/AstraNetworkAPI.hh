@@ -50,6 +50,12 @@ class AstraNetworkAPI {
         return BackendType::NotSpecified;
     };
 
+    // Backends opt in only after detailed-node clock/transport integration
+    // tests.
+    virtual bool supports_node_model() const {
+        return false;
+    }
+
     virtual int sim_comm_get_rank() {
         return rank;
     };

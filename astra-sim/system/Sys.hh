@@ -30,6 +30,7 @@ class Workload;
 class LogicalTopology;
 class BasicLogicalTopology;
 class OfflineGreedy;
+class NodeSystem;
 
 class Sys : public Callable {
   public:
@@ -150,7 +151,8 @@ class Sys : public Callable {
         std::vector<bool> dimensions_involved,
         ComType collective_type,
         int explicit_priority,
-        CommunicatorGroup* communicator_group);
+        CommunicatorGroup* communicator_group,
+        uint64_t node_operation = UINT64_MAX);
     CollectivePhase generate_collective_phase(ComType collective_type,
                                               BasicLogicalTopology* topology,
                                               uint64_t data_size,
@@ -257,6 +259,7 @@ class Sys : public Callable {
 
     // workload
     Workload* workload;
+    std::unique_ptr<NodeSystem> node_system;
 
     // roofline model
     bool roofline_enabled;

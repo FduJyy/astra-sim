@@ -17,6 +17,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error")
 
 # Setup project
 project(AstraSim_Analytical)
+include(CTest)
 
 # Compilation target
 set(BUILDTARGET "all" CACHE STRING "Compilation target ([all]/congestion_unaware/congestion_aware)")
@@ -28,3 +29,11 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../ AstraSim)
 set(NETWORK_BACKEND_BUILD_AS_LIBRARY ON)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../extern/network_backend/analytical/ Analytical)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../astra-sim/network_frontend/analytical/ AstraSim_Analytical)
+
+if(BUILD_TESTING AND TARGET AstraSim_Analytical_Congestion_Aware)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME node_model_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/node_model/integration_test.py
+                --binary $<TARGET_FILE:AstraSim_Analytical_Congestion_Aware>
+                --repo ${CMAKE_CURRENT_SOURCE_DIR}/../.. -v)
+endif()

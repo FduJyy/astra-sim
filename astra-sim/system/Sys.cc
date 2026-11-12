@@ -9,6 +9,7 @@ LICENSE file in the root directory of this source tree.
 #include <iostream>
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/node/NodeSystem.hh"
 #include "astra-sim/system/BaseStream.hh"
 #include "astra-sim/system/CollectivePlan.hh"
 #include "astra-sim/system/DataSet.hh"
@@ -28,9 +29,10 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/system/astraccl/native_collectives/collective_algorithm/DoubleBinaryTreeAllReduce.hh"
 #include "astra-sim/system/astraccl/native_collectives/collective_algorithm/HalvingDoubling.hh"
 #include "astra-sim/system/astraccl/native_collectives/collective_algorithm/Ring.hh"
-#include "astra-sim/system/scheduling/OfflineGreedy.hh"
 #include "astra-sim/system/astraccl/native_collectives/logical_topology/BasicLogicalTopology.hh"
 #include "astra-sim/system/astraccl/native_collectives/logical_topology/GeneralComplexTopology.hh"
+#include "astra-sim/system/scheduling/OfflineGreedy.hh"
+#include <filesystem>
 #include <json/json.hpp>
 
 using namespace std;
@@ -424,7 +426,43 @@ bool Sys::initialize_sys(string name) {
         this->local_mem_trace_filename = j["local-mem-trace-filename"];
     }
 
+    if (j.contains("node-model-config")) {
+        for (const auto* key :
+             {"all-reduce-implementation", "all-gather-implementation",
+              "reduce-scatter-implementation", "all-to-all-implementation"}) {
+            if (j.contains(key)) {
+                NodeSim::check(j[key].is_array(),
+                               std::string(key) +
+                                   ": expected Ring algorithm array");
+                for (const auto& algorithm : j[key]) {
+                    NodeSim::check(algorithm == "ring" ||
+                                       algorithm == "oneRing",
+                                   std::string(key) +
+                                       ": detailed mode supports Ring only");
+                }
+            }
+        }
+        for (const auto* key : {"all-reduce-implementation-custom",
+                                "all-gather-implementation-custom",
+                                "reduce-scatter-implementation-custom",
+                                "all-to-all-implementation-custom",
+                                "per-node-custom-implementation"}) {
+            NodeSim::check(
+                !j.contains(key),
+                std::string(key) +
+                    ": custom collective unsupported in detailed mode");
+        }
+    }
     collective_impl_lookup->setup_collective_impl_from_config(j);
+
+    if (j.contains("node-model-config")) {
+        NodeSim::check(
+            !roofline_enabled && !replay_only,
+            "node-model-config conflicts with roofline-enabled/replay-only");
+        const auto path = std::filesystem::path(name).parent_path() /
+                          NodeSim::text(j, "node-model-config", name);
+        node_system = std::make_unique<NodeSystem>(*this, path.string());
+    }
 
     inFile.close();
     return true;
@@ -460,10 +498,20 @@ void Sys::call(EventType type, CallData* data) {}
 
 void Sys::call_events() {
     for (auto& callable : event_queue[Sys::boostedTick()]) {
+        if (node_system && node_system->failed()) {
+            break;
+        }
         try {
             pending_events--;
             (get<0>(callable))->call(get<1>(callable), get<2>(callable));
         } catch (const std::exception& e) {
+            // Detailed model failures (capacity, invalid accesses, etc.) are
+            // fatal simulation errors. The backend callbacks are noexcept;
+            // main rethrows after the backend returns to preserve diagnostics.
+            if (node_system) {
+                node_system->fail(std::current_exception());
+                break;
+            }
             auto logger = LoggerFactory::get_logger("system");
             logger->critical("warning! a callable is removed before call {}",
                              e.what());
@@ -580,17 +628,17 @@ DataSet* Sys::generate_all_reduce(uint64_t size,
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_Reduce, workload_node_id);
-        return generate_collective(size, logical_topologies["AllReduce"],
-                                   implementation_per_dimension,
-                                   involved_dimensions, ComType::All_Reduce,
-                                   explicit_priority, communicator_group);
+        return generate_collective(
+            size, logical_topologies["AllReduce"], implementation_per_dimension,
+            involved_dimensions, ComType::All_Reduce, explicit_priority,
+            communicator_group, workload_node_id);
     } else {
         CollectivePlan* plan =
             communicator_group->get_collective_plan(ComType::All_Reduce, workload_node_id);
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_Reduce, explicit_priority,
-            communicator_group);
+            communicator_group, workload_node_id);
     }
 }
 
@@ -602,17 +650,17 @@ DataSet* Sys::generate_all_to_all(uint64_t size,
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_to_All, workload_node_id);
-        return generate_collective(size, logical_topologies["AllToAll"],
-                                   implementation_per_dimension,
-                                   involved_dimensions, ComType::All_to_All,
-                                   explicit_priority, communicator_group);
+        return generate_collective(
+            size, logical_topologies["AllToAll"], implementation_per_dimension,
+            involved_dimensions, ComType::All_to_All, explicit_priority,
+            communicator_group, workload_node_id);
     } else {
         CollectivePlan* plan =
             communicator_group->get_collective_plan(ComType::All_to_All, workload_node_id);
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_to_All, explicit_priority,
-            communicator_group);
+            communicator_group, workload_node_id);
     }
 }
 
@@ -624,17 +672,17 @@ DataSet* Sys::generate_all_gather(uint64_t size,
     if (communicator_group == nullptr) {
         vector<CollectiveImpl*> implementation_per_dimension;
         implementation_per_dimension = collective_impl_lookup->get_collective_impl(ComType::All_Gather, workload_node_id);
-        return generate_collective(size, logical_topologies["AllGather"],
-                                   implementation_per_dimension,
-                                   involved_dimensions, ComType::All_Gather,
-                                   explicit_priority, communicator_group);
+        return generate_collective(
+            size, logical_topologies["AllGather"], implementation_per_dimension,
+            involved_dimensions, ComType::All_Gather, explicit_priority,
+            communicator_group, workload_node_id);
     } else {
         CollectivePlan* plan =
             communicator_group->get_collective_plan(ComType::All_Gather, workload_node_id);
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::All_Gather, explicit_priority,
-            communicator_group);
+            communicator_group, workload_node_id);
     }
 }
 
@@ -649,14 +697,15 @@ DataSet* Sys::generate_reduce_scatter(uint64_t size,
         return generate_collective(size, logical_topologies["ReduceScatter"],
                                    implementation_per_dimension,
                                    involved_dimensions, ComType::Reduce_Scatter,
-                                   explicit_priority, communicator_group);
+                                   explicit_priority, communicator_group,
+                                   workload_node_id);
     } else {
         CollectivePlan* plan =
             communicator_group->get_collective_plan(ComType::Reduce_Scatter, workload_node_id);
         return generate_collective(
             size, plan->topology, plan->implementation_per_dimension,
             plan->dimensions_involved, ComType::Reduce_Scatter,
-            explicit_priority, communicator_group);
+            explicit_priority, communicator_group, workload_node_id);
     }
 }
 
@@ -667,22 +716,35 @@ DataSet* Sys::generate_collective(
     vector<bool> dimensions_involved,
     ComType collective_type,
     int explicit_priority,
-    CommunicatorGroup* communicator_group) {
+    CommunicatorGroup* communicator_group,
+    uint64_t node_operation) {
+    const auto dimension_scheduling = node_system
+                                          ? InterDimensionScheduling::Ascending
+                                          : inter_dimension_scheduling;
     // TODO(jinsun): For custom collective, we do not need the chunk_size here (since the chunk size is already determined)
     // Therefore, we also do not need the 'preferred-dataset-splits' value from the system JSON input. 
     // However, this variable is intertwined deeply in this function so that we cannot remove it for now.
-    // Therefore, we have to keep that value in the JSON input. TODO: Refactor and remove. 
-    uint64_t chunk_size = determine_chunk_size(size, collective_type);
+    // Therefore, we have to keep that value in the JSON input. TODO: Refactor and remove.
+    if (node_system) {
+        NodeSim::check(preferred_dataset_splits > 0 &&
+                           size % uint64_t(preferred_dataset_splits) == 0,
+                       "detailed collective requires exact nonempty chunks");
+    }
+    uint64_t chunk_size = node_system
+                              ? size / uint64_t(preferred_dataset_splits)
+                              : determine_chunk_size(size, collective_type);
     uint64_t recommended_chunk_size = chunk_size;
     int streams = ceil(((double)size) / chunk_size);
     uint64_t remain_size;
     DataSet* dataset = new DataSet(streams);
+    if (node_system) {
+        dataset->node_operation = node_operation;
+    }
     int pri = get_priority(explicit_priority);
     int count = 0;
-    if (id == 0 && (inter_dimension_scheduling ==
-                        InterDimensionScheduling::OfflineGreedy ||
-                    inter_dimension_scheduling ==
-                        InterDimensionScheduling::OfflineGreedyFlex)) {
+    if (id == 0 &&
+        (dimension_scheduling == InterDimensionScheduling::OfflineGreedy ||
+         dimension_scheduling == InterDimensionScheduling::OfflineGreedyFlex)) {
         if (last_scheduled_collective != Sys::boostedTick()) {
             offline_greedy->reset_loads();
             last_scheduled_collective = Sys::boostedTick();
@@ -729,8 +791,7 @@ DataSet* Sys::generate_collective(
             reverse(dim_mapper.begin(), dim_mapper.end());
         }
 
-        if (inter_dimension_scheduling ==
-            InterDimensionScheduling::RoundRobin) {
+        if (dimension_scheduling == InterDimensionScheduling::RoundRobin) {
             rotate(dim_mapper.begin(),
                    dim_mapper.begin() + round_robin_inter_dimension_scheduler,
                    dim_mapper.end());
@@ -740,21 +801,20 @@ DataSet* Sys::generate_collective(
                 round_robin_inter_dimension_scheduler = 0;
             }
         } else if (collective_type != ComType::All_to_All &&
-                   (inter_dimension_scheduling ==
+                   (dimension_scheduling ==
                         InterDimensionScheduling::OfflineGreedy ||
-                    inter_dimension_scheduling ==
+                    dimension_scheduling ==
                         InterDimensionScheduling::OfflineGreedyFlex)) {
             uint64_t prev_size = size;
             dim_mapper = offline_greedy->get_chunk_scheduling(
                 num_streams, size, recommended_chunk_size, dimensions_involved,
-                inter_dimension_scheduling, collective_type);
+                dimension_scheduling, collective_type);
             chunk_size = prev_size - size;
         }
 
         if (collective_type == ComType::All_to_All ||
-            (inter_dimension_scheduling !=
-                 InterDimensionScheduling::OfflineGreedy &&
-             inter_dimension_scheduling !=
+            (dimension_scheduling != InterDimensionScheduling::OfflineGreedy &&
+             dimension_scheduling !=
                  InterDimensionScheduling::OfflineGreedyFlex)) {
             if (chunk_size > size) {
                 size = 0;
@@ -785,11 +845,11 @@ DataSet* Sys::generate_collective(
                 vect.push_back(phase);
                 remain_size = phase.final_data_size;
             }
-        } else if (inter_dimension_scheduling ==
+        } else if (dimension_scheduling ==
                        InterDimensionScheduling::OfflineGreedy ||
-                   inter_dimension_scheduling ==
+                   dimension_scheduling ==
                        InterDimensionScheduling::OfflineGreedyFlex ||
-                   inter_dimension_scheduling ==
+                   dimension_scheduling ==
                        InterDimensionScheduling::OnlineGreedy) {
             int dim = 0;
 
@@ -944,6 +1004,7 @@ DataSet* Sys::generate_collective(
             }
             StreamBaseline* newStream =
                 new StreamBaseline(this, dataset, stream_id, vect, pri);
+            newStream->node_chunk_offset = uint64_t(count - 1) * chunk_size;
             newStream->current_queue_id = -1;
             insert_into_ready_list(newStream);
         } else {

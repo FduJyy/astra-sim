@@ -89,30 +89,23 @@ void Statistics::extract_type_time() {
 }
 
 void Statistics::extract_comp_comm_overlap() {
-    bool has_comp = false;
-    bool has_comm = false;
-    for (const auto& [type, time] : this->type_time) {
-        switch (type) {
-        case OperatorStatistics::OperatorType::GPU:
-            has_comp = true;
-            break;
-        case OperatorStatistics::OperatorType::COMM:
-            has_comm = true;
-            break;
-        default:
-            throw std::runtime_error(
-                "Only GPU and COMM types are supported for overlap extraction");
+    using Type = OperatorStatistics::OperatorType;
+    std::vector<std::pair<Tick, Tick>> intervals;
+    for (const auto& [node_id, stat] : operator_statistics) {
+        if (stat.type == Type::GPU || stat.type == Type::COMM) {
+            intervals.push_back({stat.start_time, stat.end_time});
         }
     }
-    if (!has_comp || !has_comm) {
-        this->comp_comm_overlap = 0;
-        return;
-    }
-    Tick overlap = 0;
-    overlap = this->type_time.at(OperatorStatistics::OperatorType::GPU) +
-              this->type_time.at(OperatorStatistics::OperatorType::COMM) -
-              this->wall_time;
-    this->comp_comm_overlap = overlap;
+    // CPU/remote-memory work and idle gaps must not enter the GPU/COMM
+    // overlap calculation. Inclusion-exclusion uses their actual interval
+    // union rather than the whole workload wall time.
+    const auto gpu = type_time.find(Type::GPU);
+    const auto comm = type_time.find(Type::COMM);
+    comp_comm_overlap =
+        gpu == type_time.end() || comm == type_time.end()
+            ? 0
+            : gpu->second + comm->second -
+                  _calculateTotalRuntimeFromIntervals(intervals);
 }
 
 Tick Statistics::_calculateTotalRuntimeFromIntervals(

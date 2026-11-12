@@ -6,11 +6,15 @@ LICENSE file in the root directory of this source tree.
 #include "astra-sim/workload/Workload.hh"
 
 #include "astra-sim/common/Logging.hh"
+#include "astra-sim/node/NodeSystem.hh"
 #include "astra-sim/system/IntData.hh"
 #include "astra-sim/system/MemEventHandlerData.hh"
 #include "astra-sim/system/RecvPacketEventHandlerData.hh"
 #include "astra-sim/system/SendPacketEventHandlerData.hh"
 #include "astra-sim/system/WorkloadLayerHandlerData.hh"
+#include <filesystem>
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <json/json.hpp>
 
 #include <iostream>
@@ -43,7 +47,24 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
         LoggerFactory::get_logger("workload")->critical(error_msg);
         exit(EXIT_FAILURE);
     }
-    this->et_feeder = new ETFeeder(workload_filename);
+    bool empty_trace = false;
+    if (sys->node_system) {
+        std::ifstream input(workload_filename, std::ios::binary);
+        google::protobuf::io::IstreamInputStream raw(&input);
+        google::protobuf::io::CodedInputStream coded(&raw);
+        uint32_t length = 0;
+        NodeSim::check(coded.ReadVarint32(&length) && length <= INT_MAX,
+                       "workload invalid Chakra metadata envelope");
+        auto limit = coded.PushLimit(int(length));
+        ChakraProtoMsg::GlobalMetadata metadata;
+        NodeSim::check(metadata.ParseFromCodedStream(&coded) &&
+                           coded.BytesUntilLimit() == 0,
+                       "workload missing Chakra global metadata");
+        coded.PopLimit(limit);
+        empty_trace = uint64_t(coded.CurrentPosition()) ==
+                      std::filesystem::file_size(workload_filename);
+    }
+    this->et_feeder = empty_trace ? nullptr : new ETFeeder(workload_filename);
     this->comm_groups.clear();
     // TODO: parametrize the number of available hardware resources
     this->hw_resource = new HardwareResource(1, sys->id);
@@ -53,6 +74,9 @@ Workload::Workload(Sys* sys, string et_filename, string comm_group_filename) {
     initialize_comm_groups(comm_group_filename);
     this->stats = new Statistics(this);
     this->is_finished = false;
+    if (sys->node_system) {
+        sys->node_system->model.on_capacity([this] { issue_detailed_nodes(); });
+    }
 }
 
 Workload::~Workload() {
@@ -87,6 +111,11 @@ void Workload::initialize_comm_groups(string comm_group_filename) {
     for (json::iterator it = j.begin(); it != j.end(); ++it) {
         std::string comm_group_name = it.key();
         int comm_group_id = std::stoi(comm_group_name);
+        if (sys->node_system) {
+            NodeSim::check(comm_group_id > 0 && comm_group_id < 500,
+                           "detailed communicator ID must be in [1,499] for "
+                           "the existing tag namespace");
+        }
 
         std::vector<int> involved_NPUs;
         for (auto id : it.value()) {
@@ -134,6 +163,10 @@ void Workload::issue_pytorch_pg_metadata(
 }
 
 void Workload::issue_dep_free_nodes() {
+    if (sys->node_system) {
+        issue_detailed_nodes();
+        return;
+    }
     auto& dependancy_resolver = this->et_feeder->getDependancyResolver();
     auto dependancy_free_nodes =
         dependancy_resolver.get_dependancy_free_nodes();
@@ -147,6 +180,97 @@ void Workload::issue_dep_free_nodes() {
             issue(node);
         }
     }
+}
+
+void Workload::issue_detailed_nodes() {
+    if (is_finished) {
+        return;
+    }
+    if (!et_feeder) {
+        report();
+        is_finished = true;
+        sys->comm_NI->sim_notify_finished();
+        return;
+    }
+    auto& resolver = et_feeder->getDependancyResolver();
+    auto ready = resolver.get_dependancy_free_nodes();
+    std::set<uint64_t> ordered(ready.begin(), ready.end());
+    for (auto id : ordered) {
+        auto node = et_feeder->lookupNode(id);
+        if (node->type() == ChakraNodeType::INVALID_NODE ||
+            node->type() == ChakraNodeType::METADATA_NODE) {
+            resolver.take_node(id);
+            if (node->type() == ChakraNodeType::METADATA_NODE) {
+                issue_pytorch_pg_metadata(node);
+            }
+            resolver.finish_node(id);
+            sys->node_system->scheduler.after(
+                0, [this] { issue_detailed_nodes(); });
+            continue;
+        }
+        const bool cpu = node->is_cpu_op<bool>(false);
+        const auto profile =
+            cpu ? std::string{}
+                : node->get_attr<std::string>("node_model_profile", "");
+        json metadata = {
+            {"cpu", cpu},
+            {"cpu_runtime_ns",
+             node->runtime() ? NodeSim::service(node->runtime(), 0.001) : 1},
+            {"et_type", int(node->type())}};
+        if (node->type() == ChakraNodeType::COMM_COLL_NODE) {
+            auto* group = extract_comm_group(node);
+            std::vector<int> participants;
+            if (group) {
+                participants = group->involved_NPUs;
+            } else {
+                for (int i = 0; i < sys->total_nodes; ++i) {
+                    participants.push_back(i);
+                }
+            }
+            metadata["participants"] = participants;
+            metadata["pg_name"] = node->pg_name<std::string>("");
+            metadata["comm_type"] = int(node->comm_type());
+            metadata["comm_size"] = node->comm_size();
+        } else if (node->type() == ChakraNodeType::COMM_SEND_NODE ||
+                   node->type() == ChakraNodeType::COMM_RECV_NODE) {
+            metadata["peer"] = node->type() == ChakraNodeType::COMM_SEND_NODE
+                                   ? node->comm_dst()
+                                   : node->comm_src();
+            metadata["tag"] = node->comm_tag();
+            metadata["comm_size"] = node->comm_size();
+        } else if (node->type() == ChakraNodeType::MEM_LOAD_NODE ||
+                   node->type() == ChakraNodeType::MEM_STORE_NODE) {
+            metadata["tensor_size"] = node->tensor_size();
+        }
+        if (sys->node_system->model.try_submit(
+                id, profile, metadata,
+                [this, node](auto, auto tick) {
+                    stats->record_start(node, tick);
+                    if (sys->track_local_mem) {
+                        local_mem_usage_tracker->recordStart(node, tick);
+                    }
+                },
+                [this](auto id, auto) { complete_detailed(id); })) {
+            resolver.take_node(id);
+        }
+    }
+    if (resolver.get_dependancy_free_nodes().empty() &&
+        resolver.get_ongoing_nodes().empty() &&
+        sys->node_system->model.idle()) {
+        report();
+        is_finished = true;
+        sys->comm_NI->sim_notify_finished();
+    }
+}
+
+void Workload::complete_detailed(uint64_t id) {
+    auto node = et_feeder->lookupNode(id);
+    stats->record_end(node, Sys::boostedTick());
+    if (sys->track_local_mem) {
+        local_mem_usage_tracker->recordEnd(node, Sys::boostedTick());
+    }
+    et_feeder->getDependancyResolver().finish_node(id);
+    issue_detailed_nodes();
 }
 
 void Workload::issue(shared_ptr<Chakra::FeederV3::ETFeederNode> node) {
@@ -459,6 +583,24 @@ void Workload::call(EventType event, CallData* data) {
     if (is_finished) {
         return;
     }
+    if (sys->node_system && data && event == EventType::General) {
+        auto* callback = static_cast<WorkloadLayerHandlerData*>(data);
+        auto it = remote_callbacks_.find(callback->node_id);
+        NodeSim::check(it != remote_callbacks_.end(),
+                       "unknown detailed remote completion");
+        auto done = std::move(it->second);
+        remote_callbacks_.erase(it);
+        sys->node_system->after_current_batch([callback] { delete callback; });
+        sys->node_system->scheduler.after(0, std::move(done), 1);
+        sys->node_system->drain();
+        return;
+    }
+    if (sys->node_system) {
+        NodeSim::check(data == nullptr,
+                       "unexpected detailed workload callback");
+        issue_detailed_nodes();
+        return;
+    }
 
     if (event == EventType::CollectiveCommunicationFinished) {
         IntData* int_data = (IntData*)data;
@@ -563,13 +705,33 @@ void Workload::call(EventType event, CallData* data) {
 
 void Workload::fire() {
     call(EventType::General, NULL);
+    if (sys->node_system) {
+        sys->node_system->drain();
+    }
+}
+
+void Workload::issue_node_remote(uint64_t bytes, std::function<void()> done) {
+    auto* data = new WorkloadLayerHandlerData;
+    data->sys_id = sys->id;
+    data->workload = this;
+    data->node_id = remote_callback_id_--;
+    remote_callbacks_[data->node_id] = std::move(done);
+    sys->remote_mem->issue(bytes, data);
 }
 
 void Workload::report() {
     Tick curr_tick = Sys::boostedTick();
-    LoggerFactory::get_logger("workload")
-        ->info("sys[{}] finished, {} cycles, exposed communication {} cycles.",
-               sys->id, curr_tick, curr_tick - hw_resource->tics_gpu_ops);
+    if (sys->node_system) {
+        LoggerFactory::get_logger("workload")
+            ->info("sys[{}] detailed finished, {} ns; node-model-summary {}",
+                   sys->id, curr_tick,
+                   sys->node_system->model.statistics().dump());
+    } else {
+        LoggerFactory::get_logger("workload")
+            ->info(
+                "sys[{}] finished, {} cycles, exposed communication {} cycles.",
+                sys->id, curr_tick, curr_tick - hw_resource->tics_gpu_ops);
+    }
     stats->post_processing();
     stats->report();
     if (this->sys->track_local_mem) {

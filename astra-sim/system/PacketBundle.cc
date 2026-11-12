@@ -4,6 +4,7 @@ LICENSE file in the root directory of this source tree.
 *******************************************************************************/
 
 #include "astra-sim/system/PacketBundle.hh"
+#include "astra-sim/node/NodeSystem.hh"
 
 using namespace AstraSim;
 
@@ -40,11 +41,23 @@ PacketBundle::PacketBundle(Sys* sys,
 }
 
 void PacketBundle::send_to_MA() {
+    if (sys->node_system) {
+        needs_processing = false;
+        sys->node_system->scheduler.after(
+            0, [this] { call(EventType::General, nullptr); });
+        return;
+    }
     sys->memBus->send_from_NPU_to_MA(transmition, size, needs_processing,
                                      send_back, this);
 }
 
 void PacketBundle::send_to_NPU() {
+    if (sys->node_system) {
+        needs_processing = false;
+        sys->node_system->scheduler.after(
+            0, [this] { call(EventType::General, nullptr); });
+        return;
+    }
     sys->memBus->send_from_MA_to_NPU(transmition, size, needs_processing,
                                      send_back, this);
 }

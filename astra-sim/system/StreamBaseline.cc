@@ -40,7 +40,9 @@ void StreamBaseline::init() {
 
 void StreamBaseline::call(EventType event, CallData* data) {
     SharedBusStat* sharedBusStat = (SharedBusStat*)data;
-    update_bus_stats(BusType::Both, sharedBusStat);
+    if (sharedBusStat != nullptr) {
+        update_bus_stats(BusType::Both, sharedBusStat);
+    }
     my_current_phase.algorithm->run(EventType::General, data);
     if (data != nullptr) {
         delete sharedBusStat;

@@ -30,6 +30,9 @@ class CongestionAwareNetworkApi final : public CommonNetworkApi {
      * @param rank id of the API
      */
     explicit CongestionAwareNetworkApi(int rank) noexcept;
+    bool supports_node_model() const override {
+        return true;
+    }
 
     /**
      * Implement sim_send of AstraNetworkAPI.
